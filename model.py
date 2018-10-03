@@ -49,6 +49,10 @@ class Model:
         :param seed:
         """
 
+        if data_format in ["NCHW", "NHWC"]:
+            self.data_format = data_format
+        else:
+            raise ValueError(f"Unknown data format {data_format}. Has to be either NCHW or NHWC")
 
         # Pathing stuff
         self.model_name = model_dir.split('/')[-1]
