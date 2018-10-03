@@ -190,10 +190,10 @@ class Model:
             with tf.variable_scope(self.model_name):
 
                 if self.data_format == "NCHW":
-                    features = tf.transpose(features["images"], [0, 3, 1, 2], name="image_input")
+                    input = tf.transpose(features["images"], [0, 3, 1, 2], name="image_input")
                     labels = tf.transpose(labels, [0, 3, 1, 2], name="label_input")
                 else:
-                    features = tf.identity(features["images"], name="image_input")
+                    input = tf.identity(features["images"], name="image_input")
                     labels = tf.identity(labels, name="label_input")
 
                 with slim.arg_scope(slim.nets.resnet_v2.resnet_arg_scope(weight_decay=WEIGHT_DECAY,
@@ -208,7 +208,7 @@ class Model:
                                          _upsample], data_format=self.data_format):
                         with slim.arg_scope([slim.batch_norm], is_training=is_training):
 
-                            net, end_points = resnet_v2_34_beta(features,
+                            net, end_points = resnet_v2_34_beta(input,
                                                                 is_training=is_training,
                                                                 global_pool=False,
                                                                 output_stride=OUTPUT_STRIDE,
