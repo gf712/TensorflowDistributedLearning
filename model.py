@@ -259,40 +259,38 @@ class Model:
                                                       scope='conv_1x1')
                                 decoder = tf.concat([decoder, assp_upsample], axis=-1, name='concat_assp')
 
-                                decoder = slim.conv2d(decoder, num_outputs=1, kernel_size=3, activation_fn=None,
+                                decoder = slim.conv2d(decoder,
+                                                      num_outputs=1,
+                                                      kernel_size=3,
+                                                      activation_fn=None,
+                                                      normalizer_fn=None,
                                                       scope='conv_3x3')
 
                                 preactivation_output = _upsample(decoder, out_shape=INPUT_SHAPE)
                                 output = tf.nn.sigmoid(preactivation_output, name='sigmoid_output')
-                                if self.data_format == "NCHW":
-                                    predicted = tf.to_float(tf.expand_dims(
-                                        tf.argmax(output,
-                                                  axis=1,
-                                                  output_type=tf.int32),
-                                        1))
-                                else:
-                                    predicted = tf.to_float(tf.expand_dims(
-                                        tf.argmax(output,
-                                                  axis=3,
-                                                  output_type=tf.int32),
-                                        3))
+                                predicted = tf.to_float(tf.greater(output, 0.5))
+
+            eval_hook = []
+            training_hook = []
 
             if mode == tf.estimator.ModeKeys.PREDICT:
                 loss = None
                 train_op = None
                 evalmetrics = None
-                # summary_hook = None
 
             elif mode in (tf.estimator.ModeKeys.EVAL, tf.estimator.ModeKeys.TRAIN):
 
                 def loss_fn():
                     with tf.device("/device:CPU:0"):
                         # run loss on CPU
-                        return lovasz_loss(labels, output, data_format=self.data_format)
+                        return lovasz_loss(labels,
+                                           preactivation_output,
+                                           data_format=self.data_format
+                                           )
 
                 loss = loss_fn()
 
-                iou = mIOU(labels, output, name="mean_iou_metric")
+                iou = mIOU(labels, predicted, name="mean_iou_metric")
                 acc = mean_accuracy(labels, predicted, name="mean_acc_metric")
 
                 evalmetrics = {"mean_iou": iou,
