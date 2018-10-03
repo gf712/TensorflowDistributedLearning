@@ -218,10 +218,10 @@ class Model:
                             with tf.variable_scope("assp"):
                                 atrous_output = end_points[f'{self.model_name}/resnet_v2/block4']
 
-                                if self.data_format == "NHWC":
-                                    output_size = atrous_output.get_shape().as_list()[1:3]
-                                else:
+                                if self.data_format == "NCHW":
                                     output_size = atrous_output.get_shape().as_list()[2:4]
+                                else:
+                                    output_size = atrous_output.get_shape().as_list()[1:3]
 
                                 with tf.variable_scope("conv"):
                                     assp_1 = slim.conv2d(atrous_output, num_outputs=BASE_DEPTH, kernel_size=1,
@@ -234,10 +234,10 @@ class Model:
                                                                     rate=8, scope='conv_3x3_3')
 
                                 with tf.variable_scope("pooling"):
-                                    if self.data_format == "NHWC":
-                                        axis = [1, 2]
-                                    else:
+                                    if self.data_format == "NCHW":
                                         axis = [2, 3]
+                                    else:
+                                        axis = [1, 2]
 
                                     assp_5 = tf.reduce_mean(atrous_output, axis=axis, keepdims=True,
                                                             name='mean_pooling')
