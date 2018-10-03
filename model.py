@@ -300,10 +300,37 @@ class Model:
                     tf.summary.scalar('mean_acc', acc[1])
                     tf.summary.scalar('mean_iou', iou[1])
 
-                # summary_hook = tf.train.SummarySaverHook(
-                #     100,
-                #     output_dir=os.path.join(self.directory, self.model_name, str(fold)),
-                #     summary_op=tf.summary.merge_all())
+                with tf.variable_scope(mode):
+                    if self.data_format == "NCHW":
+                        s_op = tf.summary.merge([tf.summary.image(f"{mode}_image",
+                                                                  tf.transpose(input,
+                                                                               perm=[0, 2, 3, 1]),
+                                                                  max_outputs=1),
+                                                 tf.summary.image(f"{mode}_label",
+                                                                  tf.transpose(labels,
+                                                                               perm=[0, 2, 3, 1]),
+                                                                  max_outputs=1),
+                                                 tf.summary.image(f"{mode}_prob",
+                                                                  tf.transpose(output,
+                                                                               perm=[0, 2, 3, 1]),
+                                                                  max_outputs=1),
+                                                 tf.summary.image(f"{mode}_prediction",
+                                                                  tf.transpose(predicted,
+                                                                               perm=[0, 2, 3, 1]),
+                                                                  max_outputs=1)])
+                    else:
+                        s_op = tf.summary.merge([tf.summary.image(f"{mode}_image",
+                                                                  input,
+                                                                  max_outputs=1),
+                                                 tf.summary.image(f"{mode}_label",
+                                                                  labels,
+                                                                  max_outputs=1),
+                                                 tf.summary.image(f"{mode}_prob",
+                                                                  output,
+                                                                  max_outputs=1),
+                                                 tf.summary.image(f"{mode}_prediction",
+                                                                  predicted,
+                                                                  max_outputs=1)])
 
                 if mode == tf.estimator.ModeKeys.TRAIN:
 
@@ -314,7 +341,18 @@ class Model:
                     update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
                     with tf.control_dependencies(update_ops):
                         train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step())
+
+                    training_hook.append(tf.train.SummarySaverHook(
+                        save_steps=20,
+                        output_dir=f"{self.model_dir}/fold{fold}",
+                        summary_op=s_op))
                 else:
+
+                    eval_hook.append(tf.train.SummarySaverHook(
+                        save_steps=1,
+                        output_dir=f"{self.model_dir}/fold{fold}",
+                        summary_op=s_op))
+
                     train_op = None
 
             else:
