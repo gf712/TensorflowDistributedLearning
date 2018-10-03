@@ -80,10 +80,12 @@ def flatten_binary_scores(scores, labels, ignore=None):
 
 
 def lovasz_loss(y_true, y_pred, data_format):
+
     if data_format == "NHWC":
         y_true, logits = K.cast(K.squeeze(y_true, -1), 'int32'), K.cast(K.squeeze(y_pred, -1), 'float32')
     else:
         y_true, logits = K.cast(K.squeeze(y_true, 1), 'int32'), K.cast(K.squeeze(y_pred, 1), 'float32')
+
     loss = lovasz_hinge(logits, y_true, per_image=True, ignore=None)
 
     return loss

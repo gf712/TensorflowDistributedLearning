@@ -64,7 +64,9 @@ class Model:
         distribution = tf.contrib.distribute.MirroredStrategy(
             devices=available_gpus[:n_gpus])
         self.config = tf.estimator.RunConfig(
-            train_distribute=distribution)
+            save_checkpoints_steps=500,
+            train_distribute=distribution
+        )
 
         # Additional args to fine tune training at high level
         self.data_format = data_format
@@ -360,12 +362,13 @@ class Model:
 
             estimator = tf.estimator.EstimatorSpec(
                 mode,
-                predictions={"probabilities": output,
-                             "class": predicted},
+                predictions={"probabilities": output},
+                # "class": predicted},
                 loss=loss,
                 train_op=train_op,
                 eval_metric_ops=evalmetrics,
-                # training_hooks=[summary_hook],
+                training_hooks=training_hook,
+                evaluation_hooks=eval_hook
             )
 
             return estimator
