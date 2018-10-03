@@ -8,7 +8,7 @@ def mIOU(y_true,
          updates_collections=None,
          name=None):
 
-    y_pred_ = tf.cast(y_pred > .5, tf.float32)
+    # y_pred_ = tf.cast(y_pred > .5, tf.float32)
 
     def iou_internal(y_true_internal, y_pred_internal):
         tp = tf.reduce_sum(tf.to_float(tf.logical_and(tf.equal(y_true_internal, 1), tf.equal(y_pred_internal, 1))))
@@ -24,7 +24,7 @@ def mIOU(y_true,
         return tf.reduce_mean(
             score * tf.to_float(tf.greater(tf.tile(score, [10]), np.arange(0.5, 1.0, 0.05, dtype='float32'))))
 
-    scores = tf.map_fn(lambda x: iou_internal(x[0], x[1]), elems=(y_true, y_pred_), dtype=tf.float32)
+    scores = tf.map_fn(lambda x: iou_internal(x[0], x[1]), elems=(y_true, y_pred), dtype=tf.float32)
 
     # return tf.reduce_mean(scores)
 
@@ -46,9 +46,9 @@ def mean_accuracy(y_true,
                   updates_collections=None,
                   name=None):
 
-    y_pred_ = tf.cast(tf.greater(y_pred, 0.5), tf.float32)
+    # y_pred_ = tf.cast(tf.greater(y_pred, 0.5), tf.float32)
 
-    scores = tf.reduce_mean(tf.to_float(tf.equal(y_true, y_pred_)), axis=[1, 2, 3])
+    scores = tf.reduce_mean(tf.to_float(tf.equal(y_true, y_pred)), axis=[1, 2, 3])
 
     # return tf.reduce_mean(scores)
     acc, update_op = tf.metrics.mean(scores)
