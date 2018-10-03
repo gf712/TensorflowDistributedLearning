@@ -19,7 +19,7 @@ def _prepare_directory(model_directory, n_folds=5):
     try:
         os.makedirs(f'{model_directory}/train/masks', exist_ok=True)
     except Exception as e:
-            print(e)
+        print(e)
 
     for fold in range(n_folds):
         try:
@@ -35,20 +35,22 @@ def _prepare_directory(model_directory, n_folds=5):
 
 def _parse_image(filename):
     image_string = tf.read_file(filename)
-    image_decoded = tf.cast(tf.image.decode_jpeg(image_string, channels=1), tf.float32) / 255.
-    image_decoded = tf.reshape(image_decoded, (101, 101, 1))
+    image_decoded = tf.cast(tf.image.decode_jpeg(image_string,
+                                                 channels=1),
+                            tf.float32) / 255.
+    image_decoded.set_shape([101, 101, 1])  # tell tf the shape of the image
     return image_decoded
 
 
-def _parse_mask(filename):
-    image_string = tf.read_file(filename)
-    image_decoded = tf.cast(tf.image.decode_jpeg(image_string, channels=1), tf.float32)
-    image_decoded = tf.reshape(image_decoded, (101, 101, 1))
-    return image_decoded
+# def _parse_mask(filename):
+#     image_string = tf.read_file(filename)
+#     image_decoded = tf.cast(tf.image.decode_jpeg(image_string, channels=1).set_shape(101, 101, 1), tf.float32) / 255.
+#     image_decoded = tf.reshape(image_decoded, (101, 101, 1))
+#     return image_decoded
 
 
 def read_image(X, y):
-    return {'images': _parse_image(X)}, _parse_mask(y)
+    return {'images': _parse_image(X)}, _parse_image(y)
 
 
 def read_and_preprocess(X, y, horizontal_flip=True,
@@ -71,7 +73,7 @@ def read_and_preprocess(X, y, horizontal_flip=True,
     """
 
     image = _parse_image(X)
-    mask = _parse_mask(y)
+    mask = _parse_image(y)
 
     image = tf.pad(image, tf.constant([[20, 20], [20, 20], [0, 0]]), mode='REFLECT')
     mask = tf.pad(mask, tf.constant([[20, 20], [20, 20], [0, 0]]), mode='REFLECT')
