@@ -12,25 +12,54 @@ def _prepare_directory(model_directory, n_folds=5):
     :return:
     """
     try:
-        os.makedirs(f'{model_directory}/train/images', exist_ok=True)
+        os.makedirs(f'{model_directory}/{tf.estimator.ModeKeys.TRAIN}/images', exist_ok=True)
+        os.makedirs(f'{model_directory}/{tf.estimator.ModeKeys.EVAL}/images', exist_ok=True)
     except Exception as e:
         print(e)
 
     try:
-        os.makedirs(f'{model_directory}/train/masks', exist_ok=True)
+        os.makedirs(f'{model_directory}/{tf.estimator.ModeKeys.TRAIN}/masks', exist_ok=True)
+        os.makedirs(f'{model_directory}/{tf.estimator.ModeKeys.EVAL}/masks', exist_ok=True)
+
     except Exception as e:
         print(e)
 
     for fold in range(n_folds):
         try:
-            os.mkdir(f'{model_directory}/train/images/fold{fold}')
-            os.mkdir(f'{model_directory}/train/masks/fold{fold}')
-
+            os.mkdir(f'{model_directory}/{tf.estimator.ModeKeys.TRAIN}/images/fold{fold}')
         except Exception as e:
             print(e)
-            print(f'{model_directory}/train/images/fold{fold} already exists!')
-            [os.remove(x) for x in glob(f'{model_directory}/train/images/fold{fold}/*')]
-            [os.remove(x) for x in glob(f'{model_directory}/train/masks/fold{fold}/*')]
+            [os.remove(x) for x in glob(f'{model_directory}/{tf.estimator.ModeKeys.TRAIN}/images/fold{fold}/*')]
+
+        try:
+            os.mkdir(f'{model_directory}/{tf.estimator.ModeKeys.TRAIN}/masks/fold{fold}')
+        except Exception as e:
+            print(e)
+            [os.remove(x) for x in glob(f'{model_directory}/{tf.estimator.ModeKeys.TRAIN}/masks/fold{fold}/*')]
+
+        try:
+            os.mkdir(f'{model_directory}/{tf.estimator.ModeKeys.EVAL}/images/fold{fold}')
+        except Exception as e:
+            print(e)
+            [os.remove(x) for x in glob(f'{model_directory}/{tf.estimator.ModeKeys.EVAL}/images/fold{fold}/*')]
+
+        try:
+            os.mkdir(f'{model_directory}/{tf.estimator.ModeKeys.EVAL}/masks/fold{fold}')
+        except Exception as e:
+            print(e)
+            [os.remove(x) for x in glob(f'{model_directory}/{tf.estimator.ModeKeys.EVAL}/masks/fold{fold}/*')]
+
+
+def create_symlinks(data_dir, model_dir, mode, idx, fold):
+    if len(glob(f"{model_dir}/{mode}/images/*.png")) == 0:
+        print(len(glob(f"{model_dir}/{mode}/images/*.png")))
+        for x in idx:
+            os.symlink(f'{data_dir}/images/{x}.png',
+                       f'{model_dir}/{mode}/images/fold{fold}/{x}.png')
+            os.symlink(f'{data_dir}/masks/{x}.png',
+                       f'{model_dir}/{mode}/masks/fold{fold}/{x}.png')
+    else:
+        print(f"Fold has already been processed, continuing with the same {mode} set")
 
 
 def _parse_image(filename):
@@ -40,13 +69,6 @@ def _parse_image(filename):
                             tf.float32) / 255.
     image_decoded.set_shape([101, 101, 1])  # tell tf the shape of the image
     return image_decoded
-
-
-# def _parse_mask(filename):
-#     image_string = tf.read_file(filename)
-#     image_decoded = tf.cast(tf.image.decode_jpeg(image_string, channels=1).set_shape(101, 101, 1), tf.float32) / 255.
-#     image_decoded = tf.reshape(image_decoded, (101, 101, 1))
-#     return image_decoded
 
 
 def read_image(X, y):
@@ -75,6 +97,7 @@ def read_and_preprocess(X, y, horizontal_flip=True,
     image = _parse_image(X)
     mask = _parse_image(y)
 
+    # add some padding to for rotations and random cropping
     image = tf.pad(image, tf.constant([[20, 20], [20, 20], [0, 0]]), mode='REFLECT')
     mask = tf.pad(mask, tf.constant([[20, 20], [20, 20], [0, 0]]), mode='REFLECT')
 

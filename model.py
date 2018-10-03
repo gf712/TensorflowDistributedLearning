@@ -5,9 +5,11 @@ from core.resnet import resnet_v2_34_beta, bottleneck
 from tensorflow.contrib import layers as layers_lib
 from core.losses import lovasz_loss
 from core.metric import mIOU, mean_accuracy
-from preprocessing.preprocessing import _prepare_directory, read_and_preprocess, read_image
+from preprocessing.preprocessing import _prepare_directory, read_and_preprocess, read_image, single_transformation, \
+    create_symlinks
 from sklearn.model_selection import StratifiedKFold
 import os
+import functools
 
 slim = tf.contrib.slim
 
@@ -38,6 +40,7 @@ class Model:
         All the data is processed using tf.data.Dataset and tf.image.
         The preprocessing currently runs on the CPU (optimal?)
         Additionally built ResNet with NCHW format support for (potentially) faster GPU and MKL optimised CPU operations
+        Currently NCHW format support is experimental and the speed up is minor (about 5-10%)
 
 
         :param model_dir:
@@ -95,20 +98,36 @@ class Model:
             raise ValueError("Batch size must be a multiple of n_gpus")
 
         for train_index, test_index in zip(train_idx, test_idx):
-            tf.logging.info(f"Processing fold {i+1}")
+            tf.logging.info(f"Processing fold {i}")
 
             model = tf.estimator.Estimator(
-                model_fn=self.build_model_fn_optimizer(i),
+                model_fn=self.build_model_fn_optimizer(),
                 model_dir=f"{self.model_dir}/fold{i}",
-                config=self.config)
+                config=self.config,
+                params={'fold': i}
+            )
 
+            create_symlinks(self.data_dir, self.model_dir, tf.estimator.ModeKeys.TRAIN, X[train_index], i)
+
+            # make_input_fn(self, mode, fold, batch_size, augment, shuffle)
             train_spec = tf.estimator.TrainSpec(
-                input_fn=self.make_input_fn(X, tf.estimator.ModeKeys.TRAIN, train_index, i, batch_size),
+                input_fn=self._make_input_fn(mode=tf.estimator.ModeKeys.TRAIN,
+                                             fold=i,
+                                             batch_size=batch_size,
+                                             augment=True,
+                                             shuffle=True),
                 max_steps=steps
             )
 
+            create_symlinks(self.data_dir, self.model_dir, tf.estimator.ModeKeys.EVAL, X[test_index], i)
+
+            # for inference increasing the batch size to double should not cause any issues
             eval_spec = tf.estimator.EvalSpec(
-                input_fn=self.make_input_fn(X, tf.estimator.ModeKeys.EVAL, test_index, i, batch_size * 2),
+                input_fn=self._make_input_fn(mode=tf.estimator.ModeKeys.EVAL,
+                                             fold=i,
+                                             batch_size=batch_size * 2,
+                                             augment=False,
+                                             shuffle=False),
                 steps=len(test_index) // (batch_size * 2),
                 throttle_secs=120,
                 start_delay_secs=120,
@@ -120,7 +139,7 @@ class Model:
                 eval_spec
             )
 
-            tf.logging.info(f'Finished training fold {i+1}.')
+            tf.logging.info(f'Finished training fold {i}.')
 
             i += 1
 
@@ -159,30 +178,42 @@ class Model:
 
         elif mode == tf.estimator.ModeKeys.EVAL:
             def train_input_fn():
-                # A vector of filenames.
-                filenames = tf.constant(
-                    [f'{self.model_dir}/train/images/fold{fold}/{x}.png' for x in X[index]])
+    def _make_input_fn(self, mode, fold, batch_size, augment, shuffle):
 
-                # `labels[i]` is the label for the image in `filenames[i].
-                labels = tf.constant(
-                    [f'{self.model_dir}/train/masks/fold{fold}/{x}.png' for x in X[index]])
+        tf.logging.info(f'{self.model_dir}/{mode}/images/fold{fold}/*.png')
 
-                dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
+        def input_fn():
+            # A vector of filenames.
+            filenames = tf.constant(
+                tf.gfile.Glob(f'{self.model_dir}/{mode}/images/fold{fold}/*.png'))
 
+            # `labels[i]` is the label for the image in `filenames[i].
+            labels = tf.constant(
+                tf.gfile.Glob(f'{self.model_dir}/{mode}/masks/fold{fold}/*.png'))
+
+            dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
+
+            if augment:
+                dataset = dataset.map(read_and_preprocess)
+            else:
                 dataset = dataset.map(read_image)
 
-                dataset = dataset.batch(batch_size)
-                dataset = dataset.prefetch(2)
+            if shuffle:
+                dataset = dataset.shuffle(batch_size * 10)
 
-                return dataset
-        else:
-            raise ValueError(f"Unknown mode {mode}")
+            dataset = dataset.repeat()
+            dataset = dataset.batch(batch_size)
+            dataset = dataset.prefetch(self.n_gpus * 2)  # prefetch twice as many batches as there are GPUs
 
-        return train_input_fn
+            return dataset
 
-    def build_model_fn_optimizer(self, fold):
+        return input_fn
 
-        def _model_fn(features, labels, mode):
+    def build_model_fn_optimizer(self):
+
+        def _model_fn(features, labels, mode, params):
+
+            fold = params["fold"]
 
             if mode == tf.estimator.ModeKeys.TRAIN:
                 is_training = True
