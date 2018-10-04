@@ -2,6 +2,32 @@ import tensorflow as tf
 import os
 from glob import glob
 import math
+import numpy as np
+
+MEAN = 0.47194585
+STD = 0.16105755
+
+
+def make_kernel(a):
+    """Transform a 2D array into a convolution kernel"""
+    a = np.asarray(a)
+    a = a.reshape(list(a.shape) + [1, 1])
+    return tf.constant(a, dtype=1)
+
+
+def simple_conv(x, k):
+    """A simplified 2D convolution operation"""
+    x = tf.expand_dims(x, -1)
+    y = tf.nn.depthwise_conv2d(x, k, [1, 1, 1, 1], padding='SAME')
+    return tf.squeeze(y, axis=-1)
+
+
+def laplace(x):
+    """Compute the 2D laplacian of an array"""
+    laplace_k = make_kernel([[0.5, 1.0, 0.5],
+                             [1.0, -6., 1.0],
+                             [0.5, 1.0, 0.5]])
+    return simple_conv(x, laplace_k)
 
 
 def _prepare_directory(model_directory, n_folds=5):
@@ -75,8 +101,12 @@ def read_image(X, y):
     return {'images': _parse_image(X)}, _parse_image(y)
 
 
-def read_and_preprocess(X, y, horizontal_flip=True,
-                        vertical_flip=True, rotate_range=20,
+def read_and_preprocess(X,
+                        y,
+                        augment=False,
+                        horizontal_flip=True,
+                        vertical_flip=True,
+                        rotate_range=20,
                         crop_probability=.5,
                         crop_min_percent=0.8,
                         crop_max_percent=1.0):
@@ -97,80 +127,113 @@ def read_and_preprocess(X, y, horizontal_flip=True,
     image = _parse_image(X)
     mask = _parse_image(y)
 
-    # add some padding to for rotations and random cropping
-    image = tf.pad(image, tf.constant([[20, 20], [20, 20], [0, 0]]), mode='REFLECT')
-    mask = tf.pad(mask, tf.constant([[20, 20], [20, 20], [0, 0]]), mode='REFLECT')
+    if augment:
+        # add some padding to for rotations and random cropping
+        image = tf.pad(image, tf.constant([[20, 20], [20, 20], [0, 0]]), mode='REFLECT')
+        mask = tf.pad(mask, tf.constant([[20, 20], [20, 20], [0, 0]]), mode='REFLECT')
 
-    # from https://becominghuman.ai/data-augmentation-on-gpu-in-tensorflow-13d14ecf2b19
-    shp = tf.shape(image)
-    # batch size is 1 because we map this function to each individual entry
-    batch_size, height, width = 1, shp[0], shp[1]
-    width = tf.cast(width, tf.float32)
-    height = tf.cast(height, tf.float32)
+        # from https://becominghuman.ai/data-augmentation-on-gpu-in-tensorflow-13d14ecf2b19
+        shp = tf.shape(image)
+        # batch size is 1 because we map this function to each individual entry
+        batch_size, height, width = 1, shp[0], shp[1]
+        width = tf.cast(width, tf.float32)
+        height = tf.cast(height, tf.float32)
 
-    # The list of affine transformations that our image will go under.
-    # Every element is Nx8 tensor, where N is a batch size.
-    transforms = []
-    identity = tf.constant([1, 0, 0, 0, 1, 0, 0, 0], dtype=tf.float32)
+        # The list of affine transformations that our image will go under.
+        # Every element is Nx8 tensor, where N is a batch size.
+        transforms = []
+        identity = tf.constant([1, 0, 0, 0, 1, 0, 0, 0], dtype=tf.float32)
 
-    image, mask = tf.cond(tf.greater(tf.random_uniform((), 0, 1.0), 0.5),
-                          lambda: (tf.image.transpose_image(image), tf.image.transpose_image(mask)),
-                          lambda: (image, mask))
+        image, mask = tf.cond(tf.greater(tf.random_uniform((), 0, 1.0), 0.5),
+                              lambda: (tf.image.transpose_image(image), tf.image.transpose_image(mask)),
+                              lambda: (image, mask))
 
-    if horizontal_flip:
-        coin = tf.less(tf.random_uniform((), 0, 1.0), 0.5)
-        flip_transform = tf.convert_to_tensor(
-            [-1., 0., width, 0., 1., 0., 0., 0.], dtype=tf.float32)
+        if horizontal_flip:
+            coin = tf.less(tf.random_uniform((), 0, 1.0), 0.5)
+            flip_transform = tf.convert_to_tensor(
+                [-1., 0., width, 0., 1., 0., 0., 0.], dtype=tf.float32)
+            transforms.append(
+                tf.where(coin,
+                         tf.tile(tf.expand_dims(flip_transform, 0), [batch_size, 1]),
+                         tf.tile(tf.expand_dims(identity, 0), [batch_size, 1])))
+
+        if vertical_flip:
+            coin = tf.less(tf.random_uniform([batch_size], 0, 1.0), 0.5)
+            flip_transform = tf.convert_to_tensor(
+                [1, 0, 0, 0, -1, height, 0, 0], dtype=tf.float32)
+            transforms.append(
+                tf.where(coin,
+                         tf.tile(tf.expand_dims(flip_transform, 0), [batch_size, 1]),
+                         tf.tile(tf.expand_dims(identity, 0), [batch_size, 1])))
+
+        angle_rad = rotate_range / 180 * math.pi
+        angles = tf.random_uniform([batch_size], -angle_rad, angle_rad)
         transforms.append(
-            tf.where(coin,
-                     tf.tile(tf.expand_dims(flip_transform, 0), [batch_size, 1]),
-                     tf.tile(tf.expand_dims(identity, 0), [batch_size, 1])))
+            tf.contrib.image.angles_to_projective_transforms(
+                angles, height, width))
 
-    if vertical_flip:
-        coin = tf.less(tf.random_uniform([batch_size], 0, 1.0), 0.5)
-        flip_transform = tf.convert_to_tensor(
-            [1, 0, 0, 0, -1, height, 0, 0], dtype=tf.float32)
-        transforms.append(
-            tf.where(coin,
-                     tf.tile(tf.expand_dims(flip_transform, 0), [batch_size, 1]),
-                     tf.tile(tf.expand_dims(identity, 0), [batch_size, 1])))
+        if crop_probability > 0:
+            crop_pct = tf.random_uniform([batch_size], crop_min_percent,
+                                         crop_max_percent)
+            left = tf.random_uniform([batch_size], 0, width * (1 - crop_pct))
+            top = tf.random_uniform([batch_size], 0, height * (1 - crop_pct))
+            crop_transform = tf.stack([
+                crop_pct,
+                tf.zeros([batch_size]), top,
+                tf.zeros([batch_size]), crop_pct, left,
+                tf.zeros([batch_size]),
+                tf.zeros([batch_size])
+            ], 1)
 
-    angle_rad = rotate_range / 180 * math.pi
-    angles = tf.random_uniform([batch_size], -angle_rad, angle_rad)
-    transforms.append(
-        tf.contrib.image.angles_to_projective_transforms(
-            angles, height, width))
+            coin = tf.less(
+                tf.random_uniform([batch_size], 0, 1.0), crop_probability)
+            transforms.append(
+                tf.where(coin, crop_transform,
+                         tf.tile(tf.expand_dims(identity, 0), [batch_size, 1])))
 
-    if crop_probability > 0:
-        crop_pct = tf.random_uniform([batch_size], crop_min_percent,
-                                     crop_max_percent)
-        left = tf.random_uniform([batch_size], 0, width * (1 - crop_pct))
-        top = tf.random_uniform([batch_size], 0, height * (1 - crop_pct))
-        crop_transform = tf.stack([
-            crop_pct,
-            tf.zeros([batch_size]), top,
-            tf.zeros([batch_size]), crop_pct, left,
-            tf.zeros([batch_size]),
-            tf.zeros([batch_size])
-        ], 1)
+        if transforms:
+            image = tf.contrib.image.transform(
+                image,
+                tf.contrib.image.compose_transforms(*transforms),
+                interpolation='BILINEAR')
+            mask = tf.contrib.image.transform(
+                mask,
+                tf.contrib.image.compose_transforms(*transforms),
+                interpolation='NEAREST')
 
-        coin = tf.less(
-            tf.random_uniform([batch_size], 0, 1.0), crop_probability)
-        transforms.append(
-            tf.where(coin, crop_transform,
-                     tf.tile(tf.expand_dims(identity, 0), [batch_size, 1])))
+        image = tf.image.central_crop(image, 101 / 141)
+        mask = tf.image.central_crop(mask, 101 / 141)
 
-    if transforms:
-        image = tf.contrib.image.transform(
-            image,
-            tf.contrib.image.compose_transforms(*transforms),
-            interpolation='BILINEAR')
-        mask = tf.contrib.image.transform(
-            mask,
-            tf.contrib.image.compose_transforms(*transforms),
-            interpolation='NEAREST')
-
-    image = tf.image.central_crop(image, 101 / 141)
-    mask = tf.image.central_crop(mask, 101 / 141)
+    image = (image - MEAN) / STD
+    # image = tf.concat([image, laplace(image)], axis=-1)
 
     return {'images': image}, mask
+
+
+def single_transformation(X, transformation):
+    """
+    Single transformation on an image
+    :param X:
+    :param y:
+    :param transformation:
+    :return:
+    """
+
+    image = _parse_image(X)
+
+    if transformation == "vertical":
+        image = tf.image.flip_up_down(image)
+
+    elif transformation == "horizontal":
+        image = tf.image.flip_left_right(image)
+
+    elif transformation == "transpose":
+        image = tf.image.transpose_image(image)
+
+    elif transformation == "none":
+        image = tf.identity(image)
+
+    else:
+        raise ValueError(f"Unknown transformation {transformation}")
+
+    return {'images': image}

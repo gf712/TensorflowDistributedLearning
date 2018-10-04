@@ -1,6 +1,8 @@
 import tensorflow as tf
 from tensorflow.contrib.slim.nets import resnet_utils
 import functools
+from tensorflow.contrib import layers as layers_lib
+from .layers import _upsample, split_separable_conv2d
 
 slim = tf.contrib.slim
 
@@ -296,3 +298,89 @@ def resnet_v2_34_beta(inputs,
                           root_block_fn=functools.partial(root_block_fn_for_beta_variant),
                           reuse=reuse,
                           scope=scope)
+
+
+def resnet_model(weight_decay,
+                 batch_norm_decay,
+                 batch_norm_epsilon,
+                 batch_norm_scale,
+                 data_format,
+                 is_training,
+                 output_stride,
+                 base_depth,
+                 input_shape
+                 ):
+
+    with slim.arg_scope(slim.nets.resnet_v2.resnet_arg_scope(weight_decay=weight_decay,
+                                                             batch_norm_decay=batch_norm_decay,
+                                                             batch_norm_epsilon=batch_norm_epsilon,
+                                                             batch_norm_scale=batch_norm_scale)):
+        with slim.arg_scope([slim.conv2d,
+                             bottleneck,
+                             layers_lib.max_pool2d,
+                             slim.batch_norm,
+                             slim.separable_conv2d,
+                             _upsample], data_format=data_format):
+            with slim.arg_scope([slim.batch_norm], is_training=is_training):
+
+                net, end_points = resnet_v2_34_beta(input,
+                                                    is_training=is_training,
+                                                    global_pool=False,
+                                                    output_stride=output_stride,
+                                                    multi_grid=(2, 2, 2),
+                                                    scope="resnet_v2")
+
+                with tf.variable_scope("assp"):
+                    atrous_output = end_points[f'{self.model_name}/resnet_v2/block4']
+
+                    if data_format == "NCHW":
+                        output_size = atrous_output.get_shape().as_list()[2:4]
+                    else:
+                        output_size = atrous_output.get_shape().as_list()[1:3]
+
+                    with tf.variable_scope("conv"):
+                        assp_1 = slim.conv2d(atrous_output, num_outputs=base_depth, kernel_size=1,
+                                             scope='conv_1x1')
+                        assp_2 = split_separable_conv2d(atrous_output, filters=base_depth, kernel_size=3,
+                                                        rate=2, scope='conv_3x3_1')
+                        assp_3 = split_separable_conv2d(atrous_output, filters=base_depth, kernel_size=3,
+                                                        rate=4, scope='conv_3x3_2')
+                        assp_4 = split_separable_conv2d(atrous_output, filters=base_depth, kernel_size=3,
+                                                        rate=8, scope='conv_3x3_3')
+
+                    with tf.variable_scope("pooling"):
+                        if data_format == "NCHW":
+                            axis = [2, 3]
+                        else:
+                            axis = [1, 2]
+
+                        assp_5 = tf.reduce_mean(atrous_output, axis=axis, keepdims=True,
+                                                name='mean_pooling')
+                        assp_5 = slim.conv2d(assp_5, num_outputs=base_depth, kernel_size=1,
+                                             scope='conv_1x1')
+                        assp_5 = _upsample(assp_5, out_shape=output_size)
+
+                    assp_concat = tf.concat([assp_1, assp_2, assp_3, assp_4, assp_5], axis=-1)
+                    assp_output = slim.conv2d(assp_concat, num_outputs=base_depth, kernel_size=1,
+                                              scope='conv_1x1')
+
+                assp_upsample = _upsample(assp_output, out_shape=(26, 26))
+
+                with tf.variable_scope("decoder"):
+                    atrous_output = end_points[
+                        f'{self.model_name}/resnet_v2/block1/unit_1/bottleneck_v2/conv3']
+
+                    decoder = slim.conv2d(atrous_output, num_outputs=base_depth, kernel_size=1,
+                                          scope='conv_1x1')
+                    decoder = tf.concat([decoder, assp_upsample], axis=-1, name='concat_assp')
+
+                    decoder = slim.conv2d(decoder,
+                                          num_outputs=1,
+                                          kernel_size=3,
+                                          activation_fn=None,
+                                          normalizer_fn=None,
+                                          scope='conv_3x3')
+
+                    preactivation_output = _upsample(decoder, out_shape=input_shape)
+
+                    return preactivation_output

@@ -50,7 +50,7 @@ def split_separable_conv2d(inputs,
 
 
 @slim.add_arg_scope
-def _fixed_padding(inputs, kernel_size, *args, mode='CONSTANT', **kwargs):
+def _fixed_padding(inputs, kernel_size, data_format="NCHW", mode='CONSTANT'):
     """
     Pads the input along the spatial dimensions independently of input size.
 
@@ -70,13 +70,14 @@ def _fixed_padding(inputs, kernel_size, *args, mode='CONSTANT', **kwargs):
     pad_beg = pad_total // 2
     pad_end = pad_total - pad_beg
 
-    if kwargs['data_format'] == 'NCHW':
+    if data_format == 'NCHW':
         padded_inputs = tf.pad(inputs, [[0, 0], [0, 0],
                                         [pad_beg, pad_end], [pad_beg, pad_end]], mode=mode)
     else:
         padded_inputs = tf.pad(inputs, [[0, 0], [pad_beg, pad_end],
                                         [pad_beg, pad_end], [0, 0]], mode=mode)
     return padded_inputs
+
 
 @slim.add_arg_scope
 def _upsample(inputs, out_shape, data_format='NCHW'):

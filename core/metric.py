@@ -8,8 +8,6 @@ def mIOU(y_true,
          updates_collections=None,
          name=None):
 
-    # y_pred_ = tf.cast(y_pred > .5, tf.float32)
-
     def iou_internal(y_true_internal, y_pred_internal):
         tp = tf.reduce_sum(tf.to_float(tf.logical_and(tf.equal(y_true_internal, 1), tf.equal(y_pred_internal, 1))))
         fp = tf.reduce_sum(tf.to_float(tf.logical_and(tf.equal(y_true_internal, 0), tf.equal(y_pred_internal, 1))))
@@ -45,8 +43,6 @@ def mean_accuracy(y_true,
                   metrics_collections=None,
                   updates_collections=None,
                   name=None):
-
-    # y_pred_ = tf.cast(tf.greater(y_pred, 0.5), tf.float32)
 
     scores = tf.reduce_mean(tf.to_float(tf.equal(y_true, y_pred)), axis=[1, 2, 3])
 
