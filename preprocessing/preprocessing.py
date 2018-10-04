@@ -106,10 +106,10 @@ def read_and_preprocess(X,
                         augment=False,
                         horizontal_flip=True,
                         vertical_flip=True,
-                        rotate_range=20,
+                        rotate_range=10,
                         crop_probability=.5,
                         crop_min_percent=0.8,
-                        crop_max_percent=1.0):
+                        crop_max_percent=1.2):
     """
     Image augmentation like Keras but pure tensor implementation
 
@@ -205,7 +205,8 @@ def read_and_preprocess(X,
         mask = tf.image.central_crop(mask, 101 / 141)
 
     image = (image - MEAN) / STD
-    # image = tf.concat([image, laplace(image)], axis=-1)
+    image = tf.concat([image, laplace(image)], axis=-1)
+    # image = laplace(image)
 
     return {'images': image}, mask
 

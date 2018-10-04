@@ -300,7 +300,9 @@ def resnet_v2_34_beta(inputs,
                           scope=scope)
 
 
-def resnet_model(weight_decay,
+def resnet_model(input,
+                 model_name,
+                 weight_decay,
                  batch_norm_decay,
                  batch_norm_epsilon,
                  batch_norm_scale,
@@ -331,7 +333,7 @@ def resnet_model(weight_decay,
                                                     scope="resnet_v2")
 
                 with tf.variable_scope("assp"):
-                    atrous_output = end_points[f'{self.model_name}/resnet_v2/block4']
+                    atrous_output = end_points[f'{model_name}/resnet_v2/block4']
 
                     if data_format == "NCHW":
                         output_size = atrous_output.get_shape().as_list()[2:4]
@@ -368,7 +370,7 @@ def resnet_model(weight_decay,
 
                 with tf.variable_scope("decoder"):
                     atrous_output = end_points[
-                        f'{self.model_name}/resnet_v2/block1/unit_1/bottleneck_v2/conv3']
+                        f'{model_name}/resnet_v2/block1/unit_1/bottleneck_v2/conv3']
 
                     decoder = slim.conv2d(atrous_output, num_outputs=base_depth, kernel_size=1,
                                           scope='conv_1x1')

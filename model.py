@@ -24,12 +24,9 @@ INPUT_SHAPE = (101, 101)
 
 BASE_DEPTH = 256
 
-DATA_FORMAT = "NCHW"
-
-
 class Model:
 
-    def __init__(self, model_dir, data_directory, data_format=DATA_FORMAT,
+    def __init__(self, model_dir, data_directory, data_format="NHWC",
                  lr=0.001, n_gpus=2, n_fold=5, seed=42):
         """
         High level wrapper to perform multi GPU training with tf.contrib.distribute.MirroredStrategy
@@ -210,8 +207,6 @@ class Model:
 
     def _make_input_fn(self, mode, fold, batch_size, augment, shuffle):
 
-        tf.logging.info(f'{self.model_dir}/{mode}/images/fold{fold}/*.png')
-
         def input_fn():
             # A vector of filenames.
             filenames = tf.constant(
@@ -223,14 +218,26 @@ class Model:
 
             dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
 
-            dataset = dataset.map(functools.partial(read_and_preprocess, augment=augment))
-
+            # based on:
+            # https://medium.com/tensorflow/multi-gpu-training-with-estimators-tf-keras-and-tf-data-ba584c3134db
             if shuffle:
-                dataset = dataset.shuffle(batch_size * 10)
+                dataset = dataset.apply(tf.contrib.data.shuffle_and_repeat(
+                    buffer_size=batch_size * 10,
+                    count=None)
+                )
+            else:
+                dataset = dataset.repeat()
 
-            dataset = dataset.repeat()
-            dataset = dataset.batch(batch_size)
-            dataset = dataset.prefetch(self.n_gpus * 2)  # prefetch twice as many batches as there are GPUs
+            # dataset = dataset.apply(
+            #     tf.contrib.data.map_and_batch(map_func=functools.partial(read_and_preprocess, augment=augment),
+            #                                   batch_size=batch_size,
+            #                                   num_parallel_calls=os.cpu_count()
+            #                                   ))
+
+            dataset = dataset.map(functools.partial(read_and_preprocess, augment=augment)).batch(batch_size)
+
+            # prefetch twice as many batches as there are GPUs
+            dataset = dataset.prefetch(self.n_gpus * 2)
 
             return dataset
 
@@ -241,11 +248,13 @@ class Model:
         def _model_fn(features, labels, mode, params):
 
             fold = params["fold"]
+            # treshold is used to determine when a prediction is negative/positive (0/1)
             if "threshold" in params:
                 threshold = params["threshold"]
             else:
                 threshold = 0.5
 
+            # switch between training and inference phase for batch norm
             if mode == tf.estimator.ModeKeys.TRAIN:
                 is_training = True
             else:
@@ -262,7 +271,10 @@ class Model:
                     if not tf.estimator.ModeKeys.EVAL:
                         labels = tf.identity(labels, name="label_input")
 
+                # Model definition
                 preactivation_output = resnet_model(
+                    input=input,
+                    model_name=self.model_name,
                     weight_decay=WEIGHT_DECAY,
                     batch_norm_decay=BATCH_NORM_DECAY,
                     batch_norm_epsilon=BATCH_NORM_EPSILON,
@@ -273,10 +285,11 @@ class Model:
                     base_depth=BASE_DEPTH,
                     input_shape=INPUT_SHAPE
                 )
-                
                 output = tf.nn.sigmoid(preactivation_output, name='sigmoid_output')
                 predicted = tf.to_float(tf.greater(output, threshold))
 
+            # maintenance code
+            # hooks to keep track of training and evaluation
             eval_hook = []
             training_hook = []
 
@@ -291,25 +304,25 @@ class Model:
 
             elif mode in (tf.estimator.ModeKeys.EVAL, tf.estimator.ModeKeys.TRAIN):
 
-                def loss_fn():
-                    with tf.device("/device:CPU:0"):
-                        # run loss on CPU
-                        return lovasz_loss(labels,
-                                           preactivation_output,
-                                           data_format=self.data_format)
+                with tf.device("/device:CPU:0"):
+                    loss = lovasz_loss(labels,
+                                       preactivation_output,
+                                       data_format=self.data_format)
 
-                loss = loss_fn()
-
+                # metrics to keep track of
                 iou = mIOU(labels, predicted, name="mean_iou_metric")
                 acc = mean_accuracy(labels, predicted, name="mean_acc_metric")
 
+                # add loss to keep track on the same plot as training data on tensorboard
                 evalmetrics = {"metrics/mean_iou": iou,
                                "metrics/mean_acc": acc,
                                "loss/lovasz_loss": tf.metrics.mean(loss)}
 
+                # list with tf.summary ops
                 s_op = []
 
                 with tf.variable_scope(mode):
+                    # write out images (convert to NHWC format, only format supported by tf.image)
                     if self.data_format == "NCHW":
                         s_op.extend([tf.summary.image(f"{mode}_image",
                                                       tf.transpose(input[..., :1],
@@ -343,6 +356,8 @@ class Model:
 
                 if mode == tf.estimator.ModeKeys.TRAIN:
 
+                    # add metric ops to add to train hooks -> this allows eval and train set metrics to be in
+                    # the same plot in tensorboard
                     with tf.variable_scope("metrics"):
                         s_op.append(tf.summary.scalar('mean_acc', acc[1]))
                         s_op.append(tf.summary.scalar('mean_iou', iou[1]))
@@ -350,10 +365,15 @@ class Model:
                     with tf.variable_scope("loss"):
                         s_op.append(tf.summary.scalar('lovasz_loss', loss))
 
+                    # define learning rate schedule
                     lr = tf.train.exponential_decay(self.lr, tf.train.get_global_step(),
                                                     10000, 0.5, staircase=False,
                                                     name='learning_rate')
+
+                    # define optimiser
                     optimizer = tf.train.AdamOptimizer(lr)
+
+                    # add batch norm moving average and variance to update ops
                     update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
                     with tf.control_dependencies(update_ops):
                         train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step())
@@ -372,13 +392,16 @@ class Model:
                         output_dir=f"{self.model_dir}/fold{fold}/eval",
                         summary_op=tf.summary.merge(s_op)))
 
-                    # save checkpoint if eval metric improves
+                    # TODO: save checkpoint if eval metric improves
 
+                    # no training op required for validation set
                     train_op = None
 
             else:
+                # only available modes are TRAIN, EVAL or PREDICT
                 raise ValueError(f"Unknown mode {mode}")
 
+            # instantiate estimator spec with all the things defined above
             estimator = tf.estimator.EstimatorSpec(
                 mode,
                 predictions={"probabilities": output,
@@ -392,4 +415,5 @@ class Model:
 
             return estimator
 
+        # return function with signature f(features, labels, mode, params): -> tf.estimator.EstimatorSpec
         return _model_fn
