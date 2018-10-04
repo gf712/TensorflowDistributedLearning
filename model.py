@@ -1,12 +1,11 @@
 import tensorflow as tf
-from utils import get_available_gpus
+from utils import get_available_gpus, metric_comparisson
 from core.resnet import resnet_model
 from core.losses import lovasz_loss
 from core.metric import mIOU, mean_accuracy
 from preprocessing.preprocessing import _prepare_directory, read_and_preprocess, single_transformation, \
     create_symlinks
 from sklearn.model_selection import StratifiedKFold
-import os
 import functools
 
 slim = tf.contrib.slim
@@ -24,12 +23,20 @@ INPUT_SHAPE = (101, 101)
 
 BASE_DEPTH = 256
 
+
 class Model:
 
-    def __init__(self, model_dir, data_directory, data_format="NHWC",
-                 lr=0.001, n_gpus=2, n_fold=5, seed=42):
+    def __init__(self,
+                 model_dir,
+                 data_directory,
+                 data_format="NHWC",
+                 lr=0.001,
+                 n_gpus=2,
+                 n_fold=5,
+                 seed=42,
+                 save_best=5):
         """
-        High level wrapper to perform multi GPU training with tf.contrib.distribute.MirroredStrategy
+        High level class to perform multi GPU training with tf.contrib.distribute.MirroredStrategy
         and tf.Estimator.
         The base models are built using tf.slim.
         All the data is processed using tf.data.Dataset and tf.image.
@@ -73,6 +80,8 @@ class Model:
         self.n_folds = n_fold
         self.seed = seed
         self.lr = lr
+
+        self.save_best = save_best
 
         _prepare_directory(self.model_dir, self.n_folds)
 
@@ -129,6 +138,24 @@ class Model:
 
             create_symlinks(self.data_dir, self.model_dir, tf.estimator.ModeKeys.EVAL, X[test_index], i)
 
+            # checkpoint best model and keep up to self.save_best models
+            if self.save_best > 0:
+                def serving_input_receiver_fn():
+                    inputs = {
+                        "image": tf.placeholder(tf.float32, [None, 101, 101, 2]),
+                    }
+                    return tf.estimator.export.ServingInputReceiver(inputs, inputs)
+
+                exporter = tf.estimator.BestExporter(name="best_exporter",
+                                                     serving_input_receiver_fn=serving_input_receiver_fn,
+                                                     exports_to_keep=self.save_best,
+                                                     compare_fn=functools.partial(metric_comparisson,
+                                                                                  key="metrics/mean_iou",
+                                                                                  greater_is_better=True)
+                                                     )
+            else:
+                exporter = None
+
             # for inference increasing the batch size to double should not cause any issues
             eval_spec = tf.estimator.EvalSpec(
                 input_fn=self._make_input_fn(mode=tf.estimator.ModeKeys.EVAL,
@@ -137,8 +164,9 @@ class Model:
                                              augment=False,
                                              shuffle=False),
                 steps=len(test_index) // (batch_size * 2),
-                throttle_secs=120,
-                start_delay_secs=120,
+                # throttle_secs=120,
+                # start_delay_secs=120,
+                exporters=exporter
             )
 
             tf.estimator.train_and_evaluate(
@@ -151,6 +179,7 @@ class Model:
 
             i += 1
 
+    # TODO: need to finish writing this method
     def predict(self, test_dir, batch_size, tti=False):
         """
         Runs evaluation with or without test time augmentation.
@@ -228,6 +257,7 @@ class Model:
             else:
                 dataset = dataset.repeat()
 
+            # for some reason this is slower than the line of code after calling read_and_preprocess
             # dataset = dataset.apply(
             #     tf.contrib.data.map_and_batch(map_func=functools.partial(read_and_preprocess, augment=augment),
             #                                   batch_size=batch_size,
@@ -236,7 +266,7 @@ class Model:
 
             dataset = dataset.map(functools.partial(read_and_preprocess, augment=augment)).batch(batch_size)
 
-            # prefetch twice as many batches as there are GPUs
+            # prefetch twice as many batches as there are GPUs -> doesn't always help and might need adjustment
             dataset = dataset.prefetch(self.n_gpus * 2)
 
             return dataset
@@ -391,8 +421,6 @@ class Model:
                         save_steps=1,
                         output_dir=f"{self.model_dir}/fold{fold}/eval",
                         summary_op=tf.summary.merge(s_op)))
-
-                    # TODO: save checkpoint if eval metric improves
 
                     # no training op required for validation set
                     train_op = None
