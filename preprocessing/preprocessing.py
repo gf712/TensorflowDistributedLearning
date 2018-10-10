@@ -101,6 +101,14 @@ def read_image(X, y):
     return {'images': _parse_image(X)}, _parse_image(y)
 
 
+def single_transformation_from_jpeg(X, transformation="none"):
+    image = _parse_image(X)
+    image = (image - MEAN) / STD
+    image = tf.concat([image, laplace(image)], axis=-1)
+
+    return single_transformation(image, transformation)
+
+
 def read_and_preprocess(X,
                         y,
                         augment=False,
@@ -238,7 +246,12 @@ def read_and_preprocess(X,
     return {'images': image}, mask
 
 
-def single_transformation(X, transformation):
+def single_transformation_from_matrix(X, transformation="none"):
+
+    return single_transformation(X, transformation)
+
+
+def single_transformation(image, transformation="none"):
     """
     Single transformation on an image
     :param X:
