@@ -108,29 +108,39 @@ def read_and_preprocess(X,
                         vertical_flip=True,
                         rotate_range=10,
                         crop_probability=.5,
-                        crop_min_percent=0.8,
-                        crop_max_percent=1.2):
+                        crop_min_percent=0.9,
+                        crop_max_percent=1.1,
+                        height_shift_range=0.2,
+                        width_shift_range=0.2,
+                        brightness_range=0.0):
     """
-    Image augmentation like Keras but pure tensor implementation
+    Image augmentation like Keras but pure tensorflow implementation
 
     :param X:
     :param y:
+    :param augment:
     :param horizontal_flip:
     :param vertical_flip:
     :param rotate_range:
     :param crop_probability:
     :param crop_min_percent:
     :param crop_max_percent:
+    :param brightness_range:
+    :param height_shift_range:
+    :param width_shift_range:
+
     :return:
     """
 
     image = _parse_image(X)
     mask = _parse_image(y)
 
+    image = (image - MEAN) / STD
+
     if augment:
-        # add some padding to for rotations and random cropping
-        image = tf.pad(image, tf.constant([[20, 20], [20, 20], [0, 0]]), mode='REFLECT')
-        mask = tf.pad(mask, tf.constant([[20, 20], [20, 20], [0, 0]]), mode='REFLECT')
+        # add some padding to image for rotations and random cropping
+        image = tf.pad(image, tf.constant([[40, 40], [40, 40], [0, 0]]), mode='REFLECT')
+        mask = tf.pad(mask, tf.constant([[40, 40], [40, 40], [0, 0]]), mode='REFLECT')
 
         # from https://becominghuman.ai/data-augmentation-on-gpu-in-tensorflow-13d14ecf2b19
         shp = tf.shape(image)
@@ -147,6 +157,9 @@ def read_and_preprocess(X,
         image, mask = tf.cond(tf.greater(tf.random_uniform((), 0, 1.0), 0.5),
                               lambda: (tf.image.transpose_image(image), tf.image.transpose_image(mask)),
                               lambda: (image, mask))
+
+        if brightness_range > 0:
+            image = tf.image.random_brightness(image=image, max_delta=brightness_range)
 
         if horizontal_flip:
             coin = tf.less(tf.random_uniform((), 0, 1.0), 0.5)
@@ -172,17 +185,32 @@ def read_and_preprocess(X,
             tf.contrib.image.angles_to_projective_transforms(
                 angles, height, width))
 
+        if width_shift_range:
+            tx = np.random.uniform(-width_shift_range, width_shift_range) * height
+        else:
+            tx = 0
+        if height_shift_range:
+            ty = np.random.uniform(-height_shift_range, height_shift_range) * height
+        else:
+            ty = 0
+
+        transforms.append(tf.contrib.image.matrices_to_flat_transforms(
+            tf.convert_to_tensor(
+                [[1, 0, tx],
+                 [0, 1, ty],
+                 [0, 0, 1]],
+                dtype=tf.float32)
+        ))
+
         if crop_probability > 0:
             crop_pct = tf.random_uniform([batch_size], crop_min_percent,
                                          crop_max_percent)
             left = tf.random_uniform([batch_size], 0, width * (1 - crop_pct))
             top = tf.random_uniform([batch_size], 0, height * (1 - crop_pct))
             crop_transform = tf.stack([
-                crop_pct,
-                tf.zeros([batch_size]), top,
+                crop_pct, tf.zeros([batch_size]), top,
                 tf.zeros([batch_size]), crop_pct, left,
-                tf.zeros([batch_size]),
-                tf.zeros([batch_size])
+                tf.zeros([batch_size]), tf.zeros([batch_size])
             ], 1)
 
             coin = tf.less(
@@ -201,10 +229,9 @@ def read_and_preprocess(X,
                 tf.contrib.image.compose_transforms(*transforms),
                 interpolation='NEAREST')
 
-        image = tf.image.central_crop(image, 101 / 141)
-        mask = tf.image.central_crop(mask, 101 / 141)
+        image = tf.image.central_crop(image, 101 / 181)
+        mask = tf.image.central_crop(mask, 101 / 181)
 
-    image = (image - MEAN) / STD
     image = tf.concat([image, laplace(image)], axis=-1)
     # image = laplace(image)
 
@@ -219,8 +246,6 @@ def single_transformation(X, transformation):
     :param transformation:
     :return:
     """
-
-    image = _parse_image(X)
 
     if transformation == "vertical":
         image = tf.image.flip_up_down(image)
