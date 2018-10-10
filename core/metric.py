@@ -1,5 +1,4 @@
 import tensorflow as tf
-import numpy as np
 
 IOU_THRESHOLDS = [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
 
@@ -13,20 +12,29 @@ def mIOU(y_true,
     with tf.variable_scope(name):
 
         def iou_internal(y_true_internal, y_pred_internal):
-            tp = tf.reduce_sum(tf.to_float(tf.logical_and(tf.equal(y_true_internal, 1), tf.equal(y_pred_internal, 1))))
-            fp = tf.reduce_sum(tf.to_float(tf.logical_and(tf.equal(y_true_internal, 0), tf.equal(y_pred_internal, 1))))
-            fn = tf.reduce_sum(tf.to_float(tf.logical_and(tf.equal(y_true_internal, 1), tf.equal(y_pred_internal, 0))))
 
-            denominator = tp + fp + fn
+            cm = tf.confusion_matrix(tf.reshape(y_true_internal, (-1,)),  # flatten matrix
+                                     tf.reshape(y_pred_internal, (-1,)),  # flatten matrix
+                                     num_classes=2,
+                                     dtype=tf.float32,
+                                     name="confusion_matrix",
+                                     )
 
+            # denominator = TP + FP + FN
+            denominator = tf.reduce_sum(tf.gather_nd(cm, [[1, 1], [0, 1], [1, 0]]))
+
+            # score = TP / (TP + FP + FN)
+            # if TP + FP + FN is 0 then return 1 (correctly identified an image with a constant 0 mask)
             score = tf.expand_dims(tf.cond(tf.greater(denominator, 0),
-                                           lambda: tf.to_float(tp / denominator),
+                                           lambda: tf.gather_nd(cm, [1, 1]) / denominator,
                                            lambda: 1.0), 0)
 
             return tf.reduce_mean(
                 score * tf.to_float(tf.greater(tf.tile(score, [len(IOU_THRESHOLDS)]), IOU_THRESHOLDS)))
 
-        scores = tf.map_fn(lambda x: iou_internal(x[0], x[1]), elems=(y_true, y_pred), dtype=tf.float32)
+        scores = tf.map_fn(lambda x: iou_internal(x[0], x[1]),
+                           elems=(y_true, y_pred),
+                           dtype=tf.float32)
 
         # return tf.reduce_mean(scores)
 
@@ -47,7 +55,6 @@ def mean_accuracy(y_true,
                   metrics_collections=None,
                   updates_collections=None,
                   name="acc"):
-
     with tf.variable_scope(name):
 
         scores = tf.reduce_mean(tf.to_float(tf.equal(y_true, y_pred)), axis=[1, 2, 3])
