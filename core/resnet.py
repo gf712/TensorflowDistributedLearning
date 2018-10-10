@@ -3,8 +3,12 @@ from tensorflow.contrib.slim.nets import resnet_utils
 import functools
 from tensorflow.contrib import layers as layers_lib
 from .layers import _upsample, split_separable_conv2d
+from tensorflow.contrib.layers.python.layers import initializers
+from tensorflow.contrib.layers.python.layers import layers
+from tensorflow.contrib.layers.python.layers import regularizers
 
 slim = tf.contrib.slim
+arg_scope = tf.contrib.framework.arg_scope
 
 _DEFAULT_MULTI_GRID = [2, 2, 2]
 
@@ -51,6 +55,43 @@ def channel_dimension(shape, data_format, min_rank=1):
 
 
 @slim.add_arg_scope
+def basic_block(inputs,
+                depth,
+                depth_bottleneck,
+                stride,
+                unit_rate=1,
+                rate=1,
+                outputs_collections=None,
+                data_format="NHWC",
+                scope=None):
+
+    # tf.logging.info(inputs)
+    with tf.variable_scope(scope, 'bottleneck_v2', [inputs]) as sc:
+        depth_in = channel_dimension(inputs.get_shape(), data_format, min_rank=4)
+        preact = slim.batch_norm(inputs, activation_fn=tf.nn.relu, scope='preact')
+        if depth_bottleneck == depth_in:
+            shortcut = resnet_utils.subsample(inputs, stride, 'shortcut')
+        else:
+            shortcut = layers_lib.conv2d(preact, depth_bottleneck, [1, 1], stride=stride,
+                                         normalizer_fn=None, activation_fn=None,
+                                         scope='shortcut')
+
+        residual = layers_lib.conv2d(preact, depth_bottleneck, 3, stride=1)
+
+        residual = resnet_utils.subsample(residual, stride, scope='conv1')
+
+        residual = layers_lib.conv2d(residual, depth_bottleneck, 3, stride=1,
+                                     rate=rate*unit_rate, scope='conv2',
+                                     normalizer_fn=None, activation_fn=None)
+
+        output = tf.nn.relu(shortcut + residual)
+
+        return slim.utils.collect_named_outputs(outputs_collections,
+                                                sc.name,
+                                                output)
+
+
+@slim.add_arg_scope
 def bottleneck(inputs,
                depth,
                depth_bottleneck,
@@ -79,27 +120,36 @@ def bottleneck(inputs,
     Returns:
     The ResNet unit's output.
     """
+    # tf.logging.info(inputs)
     with tf.variable_scope(scope, 'bottleneck_v2', [inputs]) as sc:
         depth_in = channel_dimension(inputs.get_shape(), data_format, min_rank=4)
         preact = slim.batch_norm(inputs, activation_fn=tf.nn.relu, scope='preact')
         if depth == depth_in:
             shortcut = resnet_utils.subsample(inputs, stride, 'shortcut')
         else:
-            shortcut = slim.conv2d(preact, depth, [1, 1], stride=stride,
-                                   normalizer_fn=None, activation_fn=None,
-                                   scope='shortcut')
+            shortcut = layers_lib.conv2d(preact, depth, [1, 1], stride=stride,
+                                         normalizer_fn=None, activation_fn=None,
+                                         scope='shortcut')
 
-        residual = slim.conv2d(preact, depth_bottleneck, [1, 1], stride=stride,
-                               scope='conv1')
-        residual = resnet_utils.conv2d_same(residual, depth_bottleneck, 3, stride=1,
-                                            rate=rate * unit_rate, scope='conv2')
-        residual = slim.conv2d(residual, depth, [1, 1], stride=1,
-                               activation_fn=None, scope='conv3')
+        residual = layers_lib.conv2d(preact, depth_bottleneck, [1, 1], stride=1,
+                                     scope='conv1')
 
-        output = shortcut + residual
+        residual = layers_lib.conv2d(residual, depth_bottleneck, 3, stride=1,
+                                     rate=rate * unit_rate)
+
+        residual = resnet_utils.subsample(residual, stride, scope='conv2')
+
+        residual = layers_lib.conv2d(residual, depth, [1, 1], stride=1,
+                                     normalizer_fn=None, activation_fn=None,
+                                     scope='conv3')
+
+        # tf.logging.info(residual)
+
+        output = tf.nn.relu(shortcut + residual)
 
         return slim.utils.collect_named_outputs(outputs_collections,
-                                                sc.name, output)
+                                                sc.name,
+                                                output)
 
 
 def root_block_fn_for_beta_variant(net):
@@ -111,9 +161,9 @@ def root_block_fn_for_beta_variant(net):
     Returns:
     A tensor after three 3x3 convolutions.
     """
-    net = resnet_utils.conv2d_same(net, 64, 3, stride=2, scope='conv1_1')
-    net = resnet_utils.conv2d_same(net, 64, 3, stride=1, scope='conv1_2')
-    net = resnet_utils.conv2d_same(net, 128, 3, stride=1, scope='conv1_3')
+    net = layers_lib.conv2d(net, 64, 3, stride=2, scope='conv1_1')
+    net = layers_lib.conv2d(net, 64, 3, stride=1, scope='conv1_2')
+    net = layers_lib.conv2d(net, 128, 3, stride=1, scope='conv1_3')
 
     return net
 
@@ -174,7 +224,7 @@ def resnet_v2_beta(inputs,
                                           scope='conv1')
     with tf.variable_scope(scope, 'resnet_v2', [inputs], reuse=reuse) as sc:
         end_points_collection = sc.original_name_scope + '_end_points'
-        with slim.arg_scope([slim.conv2d, bottleneck,
+        with slim.arg_scope([layers_lib.conv2d, bottleneck,
                              resnet_utils.stack_blocks_dense],
                             outputs_collections=end_points_collection):
             if is_training is not None:
@@ -197,8 +247,8 @@ def resnet_v2_beta(inputs,
                     # Global average pooling.
                     net = tf.reduce_mean(net, [1, 2], name='pool5', keepdims=True)
                 if num_classes is not None:
-                    net = slim.conv2d(net, num_classes, [1, 1], activation_fn=None,
-                                      normalizer_fn=None, scope='logits')
+                    net = layers_lib.conv2d(net, num_classes, [1, 1], activation_fn=None,
+                                            normalizer_fn=None, scope='logits')
                 # Convert end_points_collection into a dictionary of end_points.
                 end_points = slim.utils.convert_collection_to_dict(
                     end_points_collection)
@@ -207,7 +257,7 @@ def resnet_v2_beta(inputs,
                 return net, end_points
 
 
-def resnet_v2_beta_block(scope, base_depth, num_units, stride):
+def resnet_v2_beta_block(scope, base_depth, num_units, stride, block_fn):
     """Helper function for creating a resnet_v1 beta variant bottleneck block.
     Args:
     scope: The scope of the block.
@@ -218,7 +268,7 @@ def resnet_v2_beta_block(scope, base_depth, num_units, stride):
     Returns:
     A resnet_v1 bottleneck block.
     """
-    return resnet_utils.Block(scope, bottleneck, [{
+    return resnet_utils.Block(scope, block_fn, [{
         'depth': base_depth * 4,
         'depth_bottleneck': base_depth,
         'stride': 1,
@@ -231,14 +281,16 @@ def resnet_v2_beta_block(scope, base_depth, num_units, stride):
     }])
 
 
-def resnet_v2_34_beta(inputs,
-                      num_classes=None,
-                      is_training=None,
-                      global_pool=False,
-                      output_stride=None,
-                      multi_grid=None,
-                      reuse=None,
-                      scope='resnet_v2_34'):
+def resnet_v2(inputs,
+              n_blocks=(3, 4, 6),
+              block_type="bottleneck",
+              num_classes=None,
+              is_training=None,
+              global_pool=False,
+              output_stride=None,
+              multi_grid=None,
+              reuse=None,
+              scope='resnet_v2_34'):
     """Resnet v1 50 beta variant.
     This variant modifies the first convolution layer of ResNet-v1-50. In
     particular, it changes the original one 7x7 convolution to three 3x3
@@ -276,14 +328,16 @@ def resnet_v2_34_beta(inputs,
         if len(multi_grid) != 3:
             raise ValueError('Expect multi_grid to have length 3.')
 
+    block_fn = basic_block if block_type == "basic_block" else bottleneck
+
     blocks = [
         resnet_v2_beta_block(
-            'block1', base_depth=128, num_units=3, stride=2),
+            'block1', base_depth=128, num_units=n_blocks[0], stride=2, block_fn=block_fn),
         resnet_v2_beta_block(
-            'block2', base_depth=258, num_units=4, stride=2),
+            'block2', base_depth=258, num_units=n_blocks[1], stride=2, block_fn=block_fn),
         resnet_v2_beta_block(
-            'block3', base_depth=512, num_units=6, stride=2),
-        resnet_utils.Block('block4', bottleneck, [
+            'block3', base_depth=512, num_units=n_blocks[2], stride=2, block_fn=block_fn),
+        resnet_utils.Block('block4', block_fn, [
             {'depth': 1024,
              'depth_bottleneck': 256,
              'stride': 1,
@@ -300,6 +354,47 @@ def resnet_v2_34_beta(inputs,
                           scope=scope)
 
 
+def resnet_arg_scope(weight_decay=0.0001,
+                     batch_norm_decay=0.997,
+                     batch_norm_epsilon=1e-5,
+                     batch_norm_scale=True):
+    """Defines the default ResNet arg scope.
+  Args:
+    weight_decay: The weight decay to use for regularizing the model.
+    batch_norm_decay: The moving average decay when estimating layer activation
+      statistics in batch normalization.
+    batch_norm_epsilon: Small constant to prevent division by zero when
+      normalizing activations by their variance in batch normalization.
+    batch_norm_scale: If True, uses an explicit `gamma` multiplier to scale the
+      activations in the batch normalization layer.
+  Returns:
+    An `arg_scope` to use for the resnet models.
+  """
+    batch_norm_params = {
+        'decay': batch_norm_decay,
+        'epsilon': batch_norm_epsilon,
+        'scale': batch_norm_scale,
+        'updates_collections': tf.GraphKeys.UPDATE_OPS,
+    }
+
+    with arg_scope(
+            [layers_lib.conv2d],
+            weights_regularizer=regularizers.l2_regularizer(weight_decay),
+            weights_initializer=initializers.variance_scaling_initializer(),
+            activation_fn=tf.nn.relu,
+            normalizer_fn=layers.batch_norm,
+            normalizer_params=batch_norm_params):
+        with arg_scope([layers.batch_norm], **batch_norm_params):
+            # The following implies padding='SAME' for pool1, which makes feature
+            # alignment easier for dense prediction tasks. This is also used in
+            # https://github.com/facebook/fb.resnet.torch. However the accompanying
+            # code of 'Deep Residual Learning for Image Recognition' uses
+            # padding='VALID' for pool1. You can switch to that choice by setting
+            # tf.contrib.framework.arg_scope([layers_lib.max_pool2d], padding='VALID').
+            with arg_scope([layers.max_pool2d], padding='SAME') as arg_sc:
+                return arg_sc
+
+
 def resnet_model(input,
                  model_name,
                  weight_decay,
@@ -310,27 +405,37 @@ def resnet_model(input,
                  is_training,
                  output_stride,
                  base_depth,
-                 input_shape
+                 input_shape,
+                 n_blocks,
+                 block_type
                  ):
 
-    with slim.arg_scope(slim.nets.resnet_v2.resnet_arg_scope(weight_decay=weight_decay,
-                                                             batch_norm_decay=batch_norm_decay,
-                                                             batch_norm_epsilon=batch_norm_epsilon,
-                                                             batch_norm_scale=batch_norm_scale)):
-        with slim.arg_scope([slim.conv2d,
+    if len(n_blocks) != 3:
+        raise ValueError('Expect n_blocks to have length 3.')
+
+    channel_axis = -1 if data_format == "NHWC" else 1
+
+    with slim.arg_scope(resnet_arg_scope(weight_decay=weight_decay,
+                                         batch_norm_decay=batch_norm_decay,
+                                         batch_norm_epsilon=batch_norm_epsilon,
+                                         batch_norm_scale=batch_norm_scale)):
+        with slim.arg_scope([layers_lib.conv2d,
                              bottleneck,
+                             basic_block,
                              layers_lib.max_pool2d,
                              slim.batch_norm,
                              slim.separable_conv2d,
                              _upsample], data_format=data_format):
             with slim.arg_scope([slim.batch_norm], is_training=is_training):
 
-                net, end_points = resnet_v2_34_beta(input,
-                                                    is_training=is_training,
-                                                    global_pool=False,
-                                                    output_stride=output_stride,
-                                                    multi_grid=(2, 2, 2),
-                                                    scope="resnet_v2")
+                net, end_points = resnet_v2(input,
+                                            is_training=is_training,
+                                            global_pool=False,
+                                            output_stride=output_stride,
+                                            multi_grid=(1, 2, 1),
+                                            scope="resnet_v2",
+                                            n_blocks=n_blocks,
+                                            block_type=block_type)
 
                 with tf.variable_scope("assp"):
                     atrous_output = end_points[f'{model_name}/resnet_v2/block4']
@@ -341,8 +446,8 @@ def resnet_model(input,
                         output_size = atrous_output.get_shape().as_list()[1:3]
 
                     with tf.variable_scope("conv"):
-                        assp_1 = slim.conv2d(atrous_output, num_outputs=base_depth, kernel_size=1,
-                                             scope='conv_1x1')
+                        assp_1 = layers_lib.conv2d(atrous_output, num_outputs=base_depth, kernel_size=1,
+                                                   scope='conv_1x1')
                         assp_2 = split_separable_conv2d(atrous_output, filters=base_depth, kernel_size=3,
                                                         rate=2, scope='conv_3x3_1')
                         assp_3 = split_separable_conv2d(atrous_output, filters=base_depth, kernel_size=3,
@@ -358,30 +463,33 @@ def resnet_model(input,
 
                         assp_5 = tf.reduce_mean(atrous_output, axis=axis, keepdims=True,
                                                 name='mean_pooling')
-                        assp_5 = slim.conv2d(assp_5, num_outputs=base_depth, kernel_size=1,
-                                             scope='conv_1x1')
+                        assp_5 = layers_lib.conv2d(assp_5, num_outputs=base_depth, kernel_size=1,
+                                                   scope='conv_1x1')
                         assp_5 = _upsample(assp_5, out_shape=output_size)
 
-                    assp_concat = tf.concat([assp_1, assp_2, assp_3, assp_4, assp_5], axis=-1)
-                    assp_output = slim.conv2d(assp_concat, num_outputs=base_depth, kernel_size=1,
-                                              scope='conv_1x1')
+                    assp_concat = tf.concat([assp_1, assp_2, assp_3, assp_4, assp_5], axis=channel_axis)
+                    assp_output = layers_lib.conv2d(assp_concat, num_outputs=base_depth, kernel_size=1,
+                                                    scope='conv_1x1')
 
                 assp_upsample = _upsample(assp_output, out_shape=(26, 26))
 
                 with tf.variable_scope("decoder"):
-                    atrous_output = end_points[
-                        f'{model_name}/resnet_v2/block1/unit_1/bottleneck_v2/conv3']
+                    # get output of last residual convolution in block 1, unit 1
+                    last_conv = 2 if block_type == "basic_block" else 3
+                    block1_output = end_points[
+                        f'{model_name}/resnet_v2/block1/unit_1/bottleneck_v2/conv{last_conv}']
 
-                    decoder = slim.conv2d(atrous_output, num_outputs=base_depth, kernel_size=1,
-                                          scope='conv_1x1')
-                    decoder = tf.concat([decoder, assp_upsample], axis=-1, name='concat_assp')
+                    decoder = layers_lib.conv2d(block1_output, num_outputs=base_depth, kernel_size=1,
+                                                scope='conv_1x1')
 
-                    decoder = slim.conv2d(decoder,
-                                          num_outputs=1,
-                                          kernel_size=3,
-                                          activation_fn=None,
-                                          normalizer_fn=None,
-                                          scope='conv_3x3')
+                    decoder = tf.concat([decoder, assp_upsample], axis=channel_axis, name='concat_assp')
+
+                    decoder = layers_lib.conv2d(decoder,
+                                                num_outputs=1,
+                                                kernel_size=3,
+                                                activation_fn=None,
+                                                normalizer_fn=None,
+                                                scope='conv_3x3')
 
                     preactivation_output = _upsample(decoder, out_shape=input_shape)
 
